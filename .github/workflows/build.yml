@@ -1,0 +1,85 @@
+# Banana Studio catalogue — extract the uploaded ZIP and publish it on GitHub Pages
+#
+# Repo only needs:
+#   1. banana-studio-catalogue.zip   (in the repository root)
+#   2. .github/workflows/build.yml   (this file)
+#
+# One-time setup: Settings → Pages → Build and deployment → Source: "GitHub Actions"
+# After that, every push to main extracts the zip and publishes the site.
+name: Extract ZIP and deploy catalogue
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract ZIP
+        run: |
+          zipfile=$(ls *.zip 2>/dev/null | head -n 1)
+          if [ -z "$zipfile" ]; then
+            echo "No .zip file found in the repository root."; exit 1
+          fi
+          echo "Extracting $zipfile"
+          mkdir _extract _site
+          unzip -q "$zipfile" -d _extract
+          # find the folder that contains index.html (works even if the zip has a top-level folder)
+          index=$(find _extract -name index.html -not -path '*/__MACOSX/*' | head -n 1)
+          if [ -z "$index" ]; then
+            echo "index.html not found inside the ZIP."; exit 1
+          fi
+          root=$(dirname "$index")
+          cp -r "$root"/. _site/
+          rm -rf _site/.github _site/__MACOSX
+          touch _site/.nojekyll
+          echo "Site files:"; ls -la _site
+
+      - name: Stamp site URL (link preview) and version (offline cache)
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          if [ "$repo" = "${owner}.github.io" ]; then url="https://${owner}.github.io/"; else url="https://${owner}.github.io/${repo}/"; fi
+          echo "Site URL: $url"
+          sed -i "s|__SITE_URL__|${url}|g" _site/index.html
+          sed -i "s|__BUILD__|${GITHUB_SHA::7}|g" _site/sw.js
+
+      - name: Sanity check (13 images present)
+        run: |
+          count=$(ls _site/assets/images/pant-*.jpg | wc -l)
+          echo "Found $count product images"
+          test "$count" -ge 13
+          test -f _site/sw.js && test -f _site/manifest.webmanifest
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
